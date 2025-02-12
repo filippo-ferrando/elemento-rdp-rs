@@ -1,6 +1,8 @@
 #[cfg(target_os = "windows")]
 extern crate winapi;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(target_os = "linux")]
+extern crate libc;
+#[cfg(target_os = "macos")]
 extern crate libc;
 extern crate minifb;
 extern crate rdp;
@@ -18,11 +20,15 @@ use std::mem::{size_of, forget};
 use rdp::core::client::{RdpClient, Connector};
 #[cfg(target_os = "windows")]
 use winapi::um::winsock2::{select, fd_set};
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(target_os = "linux")]
 use libc::{select, fd_set, FD_SET};
+#[cfg(target_os = "macos")]
+use libc::{select, fd_set, FD_SET, FD_ZERO};
 #[cfg(target_os = "windows")]
 use std::os::windows::io::{AsRawSocket};
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(target_os = "linux")]
+use std::os::unix::io::{AsRawFd};
+#[cfg(target_os = "macos")]
 use std::os::unix::io::{AsRawFd};
 use rdp::core::event::{RdpEvent, BitmapEvent, PointerEvent, PointerButton, KeyboardEvent};
 use std::ptr::copy_nonoverlapping;
@@ -51,19 +57,25 @@ fn wait_for_fd(fd: usize) -> bool {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(target_os = "linux")]
 fn wait_for_fd(fd: usize) -> bool {
     unsafe {
         let mut raw_fds: fd_set = mem::zeroed();
+
         FD_SET(fd as i32, &mut raw_fds);
         
-        let result = select(
-            fd as i32 + 1,
-            &mut raw_fds,
-            ptr::null_mut(),
-            ptr::null_mut(),
-            ptr::null_mut()
-        );
+        let result = select(fd as i32 + 1, &mut raw_fds, ptr::null_mut(), ptr::null_mut(), ptr::null_mut());
+        result == 1
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn wait_for_fd(fd: usize) -> bool {
+    unsafe {
+        let mut raw_fds: fd_set = mem::zeroed();
+        FD_ZERO(&mut raw_fds);
+        FD_SET(fd as i32, &mut raw_fds);
+        let result = select(fd as i32 + 1, &mut raw_fds, ptr::null_mut(), ptr::null_mut(), ptr::null_mut());
         result > 0
     }
 }
@@ -236,7 +248,7 @@ fn to_scancode(key: Key) -> u16 {
 
 /// Create a tcp stream from main args
 fn tcp_from_args(args: &ArgMatches) -> RdpResult<TcpStream> {
-    let ip = args.value_of("host").expect("You need to provide a target argument");
+    let ip = args.value_of("target").expect("You need to provide a target argument");
     let port = args.value_of("port").unwrap_or_default();
 
     // TCP connection
@@ -396,7 +408,7 @@ fn main_gui_loop<S: Read + Write>(
 
             // Button is down if not 0
             let current_button = get_rdp_pointer_down(&window);
-            rdp_client_guard.try_write(RdpEvent::Pointer(
+            rdp_client_guard.write(RdpEvent::Pointer(
                 PointerEvent{
                     x: x as u16,
                     y: y as u16,
@@ -414,7 +426,7 @@ fn main_gui_loop<S: Read + Write>(
 
             for key in last_keys.iter() {
                 if !keys.contains(key) {
-                    rdp_client_guard.try_write(RdpEvent::Key(
+                    rdp_client_guard.write(RdpEvent::Key(
                         KeyboardEvent {
                             code: to_scancode(*key),
                             down: false
@@ -425,7 +437,7 @@ fn main_gui_loop<S: Read + Write>(
 
             for key in keys.iter() {
                 if window.is_key_pressed(*key, KeyRepeat::Yes){
-                    rdp_client_guard.try_write(RdpEvent::Key(
+                    rdp_client_guard.write(RdpEvent::Key(
                         KeyboardEvent {
                             code: to_scancode(*key),
                             down: true
@@ -454,10 +466,10 @@ fn main() {
         .version("0.1.0")
         .author("Sylvain Peyrefitte <citronneur@gmail.com>")
         .about("Secure Remote Desktop Client in RUST")
-        .arg(Arg::with_name("host")
-                 .long("host")
+        .arg(Arg::with_name("target")
+                 .long("target")
                  .takes_value(true)
-                 .help("host IP of the target machine"))
+                 .help("Target IP of the server"))
         .arg(Arg::with_name("port")
                  .long("port")
                  .takes_value(true)
@@ -474,7 +486,7 @@ fn main() {
                  .default_value("600")
                  .help("Screen height"))
         .arg(Arg::with_name("domain")
-                 .long("domain")
+                 .long("dom")
                  .takes_value(true)
                  .default_value("")
                  .help("Windows domain"))
@@ -484,7 +496,7 @@ fn main() {
                  .default_value("")
                  .help("Username"))
         .arg(Arg::with_name("password")
-                 .long("password")
+                 .long("pass")
                  .takes_value(true)
                  .default_value("")
                  .help("Password"))
@@ -511,7 +523,7 @@ fn main() {
                  .help("Check the target SSL certificate"))
         .arg(Arg::with_name("disable_nla")
                  .long("ssl")
-                 .help("Disable Network Level Authentication and only use SSL"))
+                 .help("Disable Netwoek Level Authentication and only use SSL"))
         .arg(Arg::with_name("name")
                  .long("name")
                  .default_value("mstsc-rs")
@@ -525,7 +537,10 @@ fn main() {
     #[cfg(target_os = "windows")]
     let handle = tcp.as_raw_socket();
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    let handle = tcp.as_raw_fd();
+
+    #[cfg(target_os = "macos")]
     let handle = tcp.as_raw_fd();
 
     // Create rdp client
