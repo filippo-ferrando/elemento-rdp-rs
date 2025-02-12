@@ -55,11 +55,16 @@ fn wait_for_fd(fd: usize) -> bool {
 fn wait_for_fd(fd: usize) -> bool {
     unsafe {
         let mut raw_fds: fd_set = mem::zeroed();
-
         FD_SET(fd as i32, &mut raw_fds);
         
-        let result = select(fd as i32 + 1, &mut raw_fds, ptr::null_mut(), ptr::null_mut(), ptr::null_mut());
-        result == 1
+        let result = select(
+            fd as i32 + 1,
+            &mut raw_fds,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut()
+        );
+        result > 0
     }
 }
 
