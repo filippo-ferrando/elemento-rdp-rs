@@ -9,14 +9,15 @@ extern crate rdp;
 extern crate hex;
 extern crate clap;
 extern crate hmac;
+extern crate web_view;
+extern crate base64;
 
-use minifb::{Key, Window, WindowOptions, MouseMode, MouseButton, KeyRepeat};
+use minifb::{Key, MouseButton, Window};
 use std::net::{SocketAddr, TcpStream};
 use std::io::{Read, Write};
-use std::time::{Instant};
+use std::time::Instant;
 use std::ptr;
-use std::mem;
-use std::mem::{size_of, forget};
+use std::mem::{self, size_of, forget};
 use rdp::core::client::{RdpClient, Connector};
 #[cfg(target_os = "windows")]
 use winapi::um::winsock2::{select, fd_set};
@@ -25,17 +26,16 @@ use libc::{select, fd_set, FD_SET};
 #[cfg(target_os = "macos")]
 use libc::{select, fd_set, FD_SET, FD_ZERO};
 #[cfg(target_os = "windows")]
-use std::os::windows::io::{AsRawSocket};
+use std::os::windows::io::AsRawSocket;
 #[cfg(target_os = "linux")]
-use std::os::unix::io::{AsRawFd};
+use std::os::unix::io::AsRawFd;
 #[cfg(target_os = "macos")]
-use std::os::unix::io::{AsRawFd};
-use rdp::core::event::{RdpEvent, BitmapEvent, PointerEvent, PointerButton, KeyboardEvent};
+use std::os::unix::io::AsRawFd;
+use rdp::core::event::{RdpEvent, BitmapEvent, PointerButton};
 use std::ptr::copy_nonoverlapping;
-use std::convert::TryFrom;
 use std::thread;
 use std::sync::{mpsc, Arc, Mutex};
-use std::thread::{JoinHandle};
+use std::thread::JoinHandle;
 use std::sync::atomic::{AtomicBool, Ordering};
 use rdp::model::error::{Error, RdpErrorKind, RdpError, RdpResult};
 use clap::{Arg, App, ArgMatches};
@@ -334,7 +334,7 @@ fn rdp_from_args<S: Read + Write>(args: &ArgMatches, stream: S) -> RdpResult<Rdp
 ///     Ok(window)
 /// }
 
-fn window_from_args(args: &ArgMatches) -> RdpResult<()> {
+fn window_from_args<'a>(args: &'a ArgMatches<'a>) -> Result<web_view::WebView<'a, ()>, Error> {
     let width = args.value_of("width").unwrap_or_default().parse().map_err(|e| {
         Error::RdpError(RdpError::new(RdpErrorKind::UnexpectedType, &format!("Cannot parse the input width argument [{}]", e)))
     })?;
@@ -348,18 +348,38 @@ fn window_from_args(args: &ArgMatches) -> RdpResult<()> {
         <html>
             <head>
                 <title>mstsc-rs Remote Desktop in Rust</title>
+                <style>
+                    body {{
+                        font-family: Arial, sans-serif;
+                    }}
+                    #rdp-container {{
+                        width: {0}px;
+                        height: {1}px;
+                        border: 1px solid #000;
+                        margin-top: 20px;
+                    }}
+                </style>
             </head>
             <body>
                 <h1>Welcome to mstsc-rs Remote Desktop in Rust</h1>
-                <p>Width: {}</p>
-                <p>Height: {}</p>
+                <p>Width: {0}</p>
+                <p>Height: {1}</p>
+                <div id="rdp-container"></div>
+                <script>
+                    function updateRdpContent(content) {{
+                        document.getElementById('rdp-container').innerHTML = content;
+                    }}
+                    window.onerror = function(message, source, lineno, colno, error) {{
+                        console.error("JavaScript Error: " + message + " at " + source + ":" + lineno + ":" + colno);
+                    }};
+                </script>
             </body>
         </html>
         "#,
         width, height
     );
 
-    web_view::builder()
+    let webview = web_view::builder()
         .title("mstsc-rs Remote Desktop in Rust")
         .content(Content::Html(html_content))
         .size(width, height)
@@ -367,12 +387,12 @@ fn window_from_args(args: &ArgMatches) -> RdpResult<()> {
         .debug(true)
         .user_data(())
         .invoke_handler(|_webview, _arg| Ok(()))
-        .run()
+        .build()
         .map_err(|e| {
             Error::RdpError(RdpError::new(RdpErrorKind::Unknown, &format!("Unable to create browser window [{}]", e)))
         })?;
 
-    Ok(())
+    Ok(webview)
 }
 
 /// This will launch the thread in charge
@@ -411,33 +431,35 @@ fn launch_rdp_thread<S: 'static + Read + Write + Send>(
 /// Print Window and handle all input (mous + keyboard)
 /// to RDP
 fn main_gui_loop<S: Read + Write>(
-    mut window: Window,
     rdp_client: Arc<Mutex<RdpClient<S>>>,
     sync: Arc<AtomicBool>,
-    bitmap_receiver: Receiver<BitmapEvent>) -> RdpResult<()> {
-
-    let (width, height) = window.get_size();
-    // Now we continue with the graphical main thread
-    // Limit to max ~60 fps update rate
-    window.limit_update_rate(Some(std::time::Duration::from_micros(16600)));
+    bitmap_receiver: Receiver<BitmapEvent>,
+    mut webview: web_view::WebView<()>) -> RdpResult<()> {
 
     // The window buffer
-    let mut buffer: Vec<u32> = vec![0; width * height];
+    let mut buffer: Vec<u32> = vec![0; 1600 * 1200]; // Default size
 
     // State for mouse button
-    let mut last_button = PointerButton::None;
+    let _last_button = PointerButton::None;
 
     // state for keyboard keys
-    let mut last_keys = vec![];
+    let _last_keys: Vec<Key> = vec![];
 
     // Start the refresh loop
-    while window.is_open() && sync.load(Ordering::Relaxed) {
+    while sync.load(Ordering::Relaxed) {
         let now = Instant::now();
 
         // Refresh loop must faster than 30 Hz
         while now.elapsed().as_micros() < 16600 * 2 {
             match bitmap_receiver.try_recv() {
-                Ok(bitmap) => fast_bitmap_transfer(&mut buffer, width, bitmap)?,
+                Ok(bitmap) => {
+                    fast_bitmap_transfer(&mut buffer, 1600, bitmap)?;
+                    let buffer_u8: Vec<u8> = unsafe {
+                        std::slice::from_raw_parts(buffer.as_ptr() as *const u8, buffer.len() * 4).to_vec()
+                    };
+                    let rdp_content = format!("<img src='data:image/png;base64,{}' />", base64::encode(&buffer_u8));
+                    webview.eval(&format!("updateRdpContent(`{}`);", rdp_content)).unwrap();
+                },
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => {
                     sync.store(false, Ordering::Relaxed);
@@ -447,58 +469,12 @@ fn main_gui_loop<S: Read + Write>(
         }
 
         // Mouse position input
-        if let Some((x, y)) = window.get_mouse_pos(MouseMode::Clamp) {
-            let mut rdp_client_guard = rdp_client.lock().map_err(|e| {
-                Error::RdpError(RdpError::new(RdpErrorKind::Unknown, &format!("Thread error during access to mutex [{}]", e)))
-            })?;
-
-            // Button is down if not 0
-            let current_button = get_rdp_pointer_down(&window);
-            rdp_client_guard.write(RdpEvent::Pointer(
-                PointerEvent{
-                    x: x as u16,
-                    y: y as u16,
-                    button: if last_button == current_button { PointerButton::None } else { PointerButton::try_from(last_button as u8 | current_button as u8).unwrap() },
-                    down: (last_button != current_button) && last_button == PointerButton::None
-                })
-            )?;
-
-            last_button = current_button;
-        }
-
         // Keyboard inputs
-        if let Some(keys) = window.get_keys() {
-            let mut rdp_client_guard = rdp_client.lock().unwrap();
 
-            for key in last_keys.iter() {
-                if !keys.contains(key) {
-                    rdp_client_guard.write(RdpEvent::Key(
-                        KeyboardEvent {
-                            code: to_scancode(*key),
-                            down: false
-                        })
-                    )?
-                }
-            }
-
-            for key in keys.iter() {
-                if window.is_key_pressed(*key, KeyRepeat::Yes){
-                    rdp_client_guard.write(RdpEvent::Key(
-                        KeyboardEvent {
-                            code: to_scancode(*key),
-                            down: true
-                        })
-                    )?
-                }
-            }
-
-            last_keys = keys;
+        // Update the webview
+        if let Some(Err(e)) = webview.step() {
+            return Err(Error::RdpError(RdpError::new(RdpErrorKind::Unknown, &format!("Unable to update webview [{}]", e))));
         }
-
-        // We unwrap here as we want this code to exit if it fails. Real applications may want to handle this in a different way
-        window.update_with_buffer(&buffer, width, height).map_err(|e| {
-            Error::RdpError(RdpError::new(RdpErrorKind::Unknown, &format!("Unable to update screen buffer [{}]", e)))
-        })?;
     }
 
     sync.store(false, Ordering::Relaxed);
@@ -569,7 +545,7 @@ fn main() {
                  .help("Check the target SSL certificate"))
         .arg(Arg::with_name("disable_nla")
                  .long("ssl")
-                 .help("Disable Netwoek Level Authentication and only use SSL"))
+                 .help("Disable Network Level Authentication and only use SSL"))
         .arg(Arg::with_name("name")
                  .long("name")
                  .default_value("mstsc-rs")
@@ -592,7 +568,8 @@ fn main() {
     // Create rdp client
     let rdp_client = rdp_from_args(&matches, tcp).unwrap();
 
-    let window = window_from_args(&matches).unwrap();
+    // Create the browser window with dynamic HTML content
+    let webview = window_from_args(&matches).unwrap();
 
     // All relative to sync
     // channel use by the back channel to send bitmap to main GUI thread
@@ -614,10 +591,10 @@ fn main() {
 
     // Launch the GUI
     main_gui_loop(
-        window,
         rdp_client_mutex,
         sync,
-        bitmap_receiver
+        bitmap_receiver,
+        webview
     ).unwrap();
 
     rdp_thread.join().unwrap();
