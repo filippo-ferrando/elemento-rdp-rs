@@ -321,7 +321,11 @@ fn window_from_args(args: &ArgMatches) -> RdpResult<Window> {
         "mstsc-rs Remote Desktop in Rust",
         width,
         height,
-        WindowOptions::default(),
+        WindowOptions {
+            resize: true,
+            scale: minifb::Scale::X1,
+            ..WindowOptions::default()
+        },
     ).map_err(|e| {
         Error::RdpError(RdpError::new(RdpErrorKind::Unknown, &format!("Unable to create window [{}]", e)))
     })?;
@@ -478,12 +482,12 @@ fn main() {
         .arg(Arg::with_name("width")
                  .long("width")
                  .takes_value(true)
-                 .default_value("800")
+                 .default_value("1600")
                  .help("Screen width"))
         .arg(Arg::with_name("height")
                  .long("height")
                  .takes_value(true)
-                 .default_value("600")
+                 .default_value("1200")
                  .help("Screen height"))
         .arg(Arg::with_name("domain")
                  .long("dom")
