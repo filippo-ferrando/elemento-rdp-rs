@@ -38,6 +38,7 @@ rand = "^0.7"
 num-bigint = "^0.2"
 x509-parser = "0.6.5"
 num_enum = "0.4.3"
+web-view = "0.7"
 
 # for mtsc-rs
 hex = { version = "^0.4", optional = true }

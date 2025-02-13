@@ -41,6 +41,7 @@ use rdp::model::error::{Error, RdpErrorKind, RdpError, RdpResult};
 use clap::{Arg, App, ArgMatches};
 use rdp::core::gcc::KeyboardLayout;
 use std::sync::mpsc::{Receiver, Sender};
+use web_view::*;
 
 const APPLICATION_NAME: &str = "mstsc-rs";
 
@@ -309,7 +310,31 @@ fn rdp_from_args<S: Read + Write>(args: &ArgMatches, stream: S) -> RdpResult<Rdp
 /// It's also in charge to send input
 /// like keyboard and mouse to the
 /// RDP protocol
-fn window_from_args(args: &ArgMatches) -> RdpResult<Window> {
+/// fn window_from_args(args: &ArgMatches) -> RdpResult<Window> {
+///     let width = args.value_of("width").unwrap_or_default().parse().map_err(|e| {
+///         Error::RdpError(RdpError::new(RdpErrorKind::UnexpectedType, &format!("Cannot parse the input width argument [{}]", e)))
+///     })?;
+///     let height = args.value_of("height").unwrap_or_default().parse().map_err(|e| {
+///         Error::RdpError(RdpError::new(RdpErrorKind::UnexpectedType, &format!("Cannot parse the input height argument [{}]", e)))
+///     })?;
+/// 
+///     let window = Window::new(
+///         "mstsc-rs Remote Desktop in Rust",
+///         width,
+///         height,
+///         WindowOptions {
+///             resize: true,
+///             scale: minifb::Scale::X1,
+///             ..WindowOptions::default()
+///         },
+///     ).map_err(|e| {
+///         Error::RdpError(RdpError::new(RdpErrorKind::Unknown, &format!("Unable to create window [{}]", e)))
+///     })?;
+/// 
+///     Ok(window)
+/// }
+
+fn window_from_args(args: &ArgMatches) -> RdpResult<()> {
     let width = args.value_of("width").unwrap_or_default().parse().map_err(|e| {
         Error::RdpError(RdpError::new(RdpErrorKind::UnexpectedType, &format!("Cannot parse the input width argument [{}]", e)))
     })?;
@@ -317,20 +342,37 @@ fn window_from_args(args: &ArgMatches) -> RdpResult<Window> {
         Error::RdpError(RdpError::new(RdpErrorKind::UnexpectedType, &format!("Cannot parse the input height argument [{}]", e)))
     })?;
 
-    let window = Window::new(
-        "mstsc-rs Remote Desktop in Rust",
-        width,
-        height,
-        WindowOptions {
-            resize: true,
-            scale: minifb::Scale::X1,
-            ..WindowOptions::default()
-        },
-    ).map_err(|e| {
-        Error::RdpError(RdpError::new(RdpErrorKind::Unknown, &format!("Unable to create window [{}]", e)))
-    })?;
+    let html_content = format!(
+        r#"
+        <!doctype html>
+        <html>
+            <head>
+                <title>mstsc-rs Remote Desktop in Rust</title>
+            </head>
+            <body>
+                <h1>Welcome to mstsc-rs Remote Desktop in Rust</h1>
+                <p>Width: {}</p>
+                <p>Height: {}</p>
+            </body>
+        </html>
+        "#,
+        width, height
+    );
 
-    Ok(window)
+    web_view::builder()
+        .title("mstsc-rs Remote Desktop in Rust")
+        .content(Content::Html(html_content))
+        .size(width, height)
+        .resizable(true)
+        .debug(true)
+        .user_data(())
+        .invoke_handler(|_webview, _arg| Ok(()))
+        .run()
+        .map_err(|e| {
+            Error::RdpError(RdpError::new(RdpErrorKind::Unknown, &format!("Unable to create browser window [{}]", e)))
+        })?;
+
+    Ok(())
 }
 
 /// This will launch the thread in charge
